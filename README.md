@@ -5,7 +5,7 @@
   <img alt="containish logo" src="/img_1.png" width="25%" height="25%">
 </picture>
 
-Containish: A simplistic containerization system written in Go
+**Containish**: A simplistic container runtime system written in Go
 </div>
 
 ---
