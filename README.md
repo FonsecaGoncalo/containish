@@ -5,7 +5,7 @@
   <img alt="containish logo" src="/img_1.png" width="25%" height="25%">
 </picture>
 
-Containish: A naive and simplistic containerization system written in Go
+Containish: A simplistic containerization system written in Go
 </div>
 
 ---
@@ -32,7 +32,10 @@ go build -o containish
 
 The `scripts/integration_test.sh` helper boots the Vagrant VM and executes the
 Go integration tests inside it. Ensure Vagrant is installed and that an Alpine
-root filesystem exists at `./alpine` before running the script.
+root filesystem exists at `./alpine` before running the script. A minimal
+`config.json` using the [OCI runtime-spec](https://github.com/opencontainers/runtime-spec)
+is provided at the repository root and is used by default when running
+`containish run`.
 
 ```bash
 ./scripts/integration_test.sh

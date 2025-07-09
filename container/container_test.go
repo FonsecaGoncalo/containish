@@ -57,3 +57,21 @@ func TestSaveStateCreatesDir(t *testing.T) {
 		t.Fatalf("state.json not created: %v", err)
 	}
 }
+
+func TestLoadSpec(t *testing.T) {
+	dir := t.TempDir()
+	specJSON := `{"ociVersion":"1.0.2","root":{"path":"/tmp/rootfs"}}`
+	cfg := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfg, []byte(specJSON), 0644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	spec, err := LoadSpec(cfg)
+	if err != nil {
+		t.Fatalf("LoadSpec failed: %v", err)
+	}
+
+	if spec.Root.Path != "/tmp/rootfs" {
+		t.Fatalf("unexpected root path %s", spec.Root.Path)
+	}
+}

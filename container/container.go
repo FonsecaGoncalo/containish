@@ -97,9 +97,19 @@ func CreateStateDir(containerId string) (string, error) {
 }
 
 // RunContainer prepares, forks, and executes the container process.
-func RunContainer(containerId string) error {
-	// Copy the local Alpine root filesystem into /alpine.
-	if err := cpAlpineFS(); err != nil {
+func RunContainer(containerId, specPath string) error {
+	spec, err := LoadSpec(specPath)
+	if err != nil {
+		return fmt.Errorf("loading spec: %w", err)
+	}
+
+	rootfs := spec.Root.Path
+	if rootfs == "" {
+		rootfs = "/alpine"
+	}
+
+	// Copy the local Alpine root filesystem into the location specified by the spec.
+	if err := cpAlpineFS(rootfs); err != nil {
 		return fmt.Errorf("failed to copy alpine FS: %w", err)
 	}
 
@@ -138,6 +148,7 @@ func RunContainer(containerId string) error {
 	cmd.ExtraFiles = append(cmd.ExtraFiles, child)
 	// We inform the child process which FD to use via the environment.
 	cmd.Env = append(cmd.Env, "INIT_PIPE="+strconv.Itoa(3+len(cmd.ExtraFiles)-1))
+	cmd.Env = append(cmd.Env, "ROOTFS_PATH="+rootfs)
 
 	fmt.Println("PARENT: Forking /proc/self/exe with PARENT_STAGE")
 	if err := cmd.Start(); err != nil {
@@ -174,10 +185,9 @@ func RunContainer(containerId string) error {
 	return nil
 }
 
-// cpAlpineFS copies the local Alpine filesystem from /vagrant/alpine to /alpine.
-func cpAlpineFS() error {
+// cpAlpineFS copies the local Alpine filesystem from /vagrant/alpine to dst.
+func cpAlpineFS(dst string) error {
 	src := "/vagrant/alpine"
-	dst := "/alpine"
 
 	cmd := exec.Command("cp", "-r", src, dst)
 	cmd.Stderr = os.Stderr
@@ -261,14 +271,19 @@ func handleChildStage() error {
 	fmt.Println("INIT: Entering child stage")
 	fmt.Printf("INIT (child-stage): process pid on the host = %d\n", unix.Getpid())
 
+	rootfs := os.Getenv("ROOTFS_PATH")
+	if rootfs == "" {
+		rootfs = "/alpine"
+	}
+
 	// Make / a private mount point so we don't propagate changes.
 	if err := unix.Mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("failed to make / a private mount: %w", err)
 	}
 
-	// Bind-mount /alpine to itself so we can pivot-root later.
-	if err := unix.Mount("/alpine", "/alpine", "bind", unix.MS_BIND|unix.MS_REC, ""); err != nil {
-		return fmt.Errorf("failed to bind /alpine: %w", err)
+	// Bind-mount the rootfs to itself so we can pivot-root later.
+	if err := unix.Mount(rootfs, rootfs, "bind", unix.MS_BIND|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("failed to bind %s: %w", rootfs, err)
 	}
 
 	oldroot, err := unix.Open("/", unix.O_DIRECTORY|unix.O_RDONLY, 0)
@@ -277,18 +292,18 @@ func handleChildStage() error {
 	}
 	defer unix.Close(oldroot)
 
-	newroot, err := unix.Open("/alpine", unix.O_DIRECTORY|unix.O_RDONLY, 0)
+	newroot, err := unix.Open(rootfs, unix.O_DIRECTORY|unix.O_RDONLY, 0)
 	if err != nil {
-		return fmt.Errorf("error opening new root '/alpine': %w", err)
+		return fmt.Errorf("error opening new root '%s': %w", rootfs, err)
 	}
 	defer unix.Close(newroot)
 
-	// Move into /alpine so pivot_root operates on "."
+	// Move into the new root so pivot_root operates on "."
 	if err := unix.Fchdir(newroot); err != nil {
 		return fmt.Errorf("failed to fchdir to new root: %w", err)
 	}
 
-	fmt.Println("INIT (child-stage): pivot_root into /alpine ...")
+	fmt.Printf("INIT (child-stage): pivot_root into %s ...\n", rootfs)
 	if err := unix.PivotRoot(".", "."); err != nil {
 		return fmt.Errorf("failed to pivot_root: %w", err)
 	}

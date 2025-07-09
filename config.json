@@ -1,0 +1,11 @@
+{
+  "ociVersion": "1.0.2",
+  "root": {
+    "path": "/alpine",
+    "readonly": false
+  },
+  "process": {
+    "terminal": true,
+    "args": ["/bin/sh"]
+  }
+}
