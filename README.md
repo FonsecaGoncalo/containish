@@ -8,8 +8,6 @@
 <h1>Containish</h1>
 </div>
 
----
-
 ## 📋 Requirements
 
 - **Go** (1.16 or higher) 🏁
