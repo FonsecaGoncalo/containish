@@ -5,7 +5,7 @@
   <img alt="containish logo" src="/img_1.png" width="25%" height="25%">
 </picture>
 
-<h1>Containish</h1>
+Containish: A naive and simplistic containerization system written in Go
 </div>
 
 ## 📋 Requirements
