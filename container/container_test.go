@@ -2,7 +2,9 @@ package container
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -73,5 +75,46 @@ func TestLoadSpec(t *testing.T) {
 
 	if spec.Root.Path != "/tmp/rootfs" {
 		t.Fatalf("unexpected root path %s", spec.Root.Path)
+	}
+}
+
+func TestStopContainer(t *testing.T) {
+	baseStateDir = t.TempDir()
+	id := "stoptest"
+
+	// launch a dummy process to act as the container init
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start dummy process: %v", err)
+	}
+
+	stateDir, err := CreateStateDir(id)
+	if err != nil {
+		t.Fatalf("failed to create state dir: %v", err)
+	}
+	c := &Container{Id: id, InitProcessPiD: cmd.Process.Pid, CreatedAt: time.Now(), Status: Running}
+	if err := SaveState(stateDir, c); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
+	if err := StopContainer(id); err != nil {
+		t.Fatalf("StopContainer failed: %v", err)
+	}
+
+	// Wait for process to exit to avoid race in checking
+	_ = cmd.Wait()
+
+	// process should be gone
+	err = cmd.Process.Signal(syscall.Signal(0))
+	if err == nil {
+		t.Fatalf("process still running after StopContainer")
+	}
+
+	loaded, err := LoadState(stateDir)
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if loaded.Status != Stopped {
+		t.Fatalf("expected status Stopped, got %v", loaded.Status)
 	}
 }

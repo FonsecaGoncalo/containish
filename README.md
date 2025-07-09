@@ -44,3 +44,18 @@ is provided at the repository root and is used by default when running
 The tests build the binary and launch a container that should print `hello`.
 If the output ends with the usual Go test `PASS` line, the container behaved as
 expected.
+
+## 🚀 Running Containers
+
+Use `containish run <id>` to start a container using the default `config.json`.
+Add the `-d` flag to detach and return immediately after the container starts:
+
+```bash
+sudo ./containish run -d mycontainer
+```
+
+Stop a running container with:
+
+```bash
+sudo ./containish stop mycontainer
+```

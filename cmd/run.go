@@ -8,7 +8,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var configPath string
+var (
+	configPath string
+	detach     bool
+)
 
 var runCmd = &cobra.Command{
 	Use:   "run <container-id>",
@@ -18,7 +21,7 @@ var runCmd = &cobra.Command{
 		id := args[0]
 		fmt.Printf("Contain-ish: Running '%v' inside a container.\n", id)
 
-		if err := container.RunContainer(id, configPath); err != nil {
+		if err := container.RunContainer(id, configPath, detach); err != nil {
 			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
@@ -27,4 +30,5 @@ var runCmd = &cobra.Command{
 
 func init() {
 	runCmd.Flags().StringVarP(&configPath, "config", "c", "config.json", "path to OCI config file")
+	runCmd.Flags().BoolVarP(&detach, "detach", "d", false, "run container in background")
 }

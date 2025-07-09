@@ -1,8 +1,8 @@
 package container
 
 import (
+	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -32,6 +33,22 @@ type Container struct {
 	CreatedAt      time.Time `json:"createdAt"`
 	Status         Status    `json:"status"`
 	Bundle         string    `json:"bundle"`
+}
+
+// stageOptions represents configuration passed from the runtime to the parent
+// stage through the init pipe.
+type stageOptions struct {
+	Detach bool   `json:"detach"`
+	Rootfs string `json:"rootfs"`
+}
+
+// baseStateDir is where container state directories are created. It is a
+// variable so tests can override it.
+var baseStateDir = "/run/miniruntime"
+
+// StateDir returns the path to the state directory for a container.
+func StateDir(id string) string {
+	return filepath.Join(baseStateDir, id)
 }
 
 func SaveState(stateDir string, s *Container) error {
@@ -88,8 +105,7 @@ func LoadSpec(configPath string) (*specs.Spec, error) {
 }
 
 func CreateStateDir(containerId string) (string, error) {
-	baseDir := "/run/miniruntime"
-	stateDir := filepath.Join(baseDir, containerId)
+	stateDir := StateDir(containerId)
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create container state dir: %w", err)
 	}
@@ -97,7 +113,9 @@ func CreateStateDir(containerId string) (string, error) {
 }
 
 // RunContainer prepares, forks, and executes the container process.
-func RunContainer(containerId, specPath string) error {
+// RunContainer prepares, forks, and executes the container process. If detach is
+// true, the function returns once the container init process is running.
+func RunContainer(containerId, specPath string, detach bool) error {
 	spec, err := LoadSpec(specPath)
 	if err != nil {
 		return fmt.Errorf("loading spec: %w", err)
@@ -132,7 +150,7 @@ func RunContainer(containerId, specPath string) error {
 
 	// Create a socket pair used for simple one-byte notifications
 	// between the parent and child processes.
-	parent, child, err := initSocketPair("init")
+	parent, child, err := initSocketPair("init", unix.SOCK_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("failed to create socket pair: %w", err)
 	}
@@ -148,7 +166,6 @@ func RunContainer(containerId, specPath string) error {
 	cmd.ExtraFiles = append(cmd.ExtraFiles, child)
 	// We inform the child process which FD to use via the environment.
 	cmd.Env = append(cmd.Env, "INIT_PIPE="+strconv.Itoa(3+len(cmd.ExtraFiles)-1))
-	cmd.Env = append(cmd.Env, "ROOTFS_PATH="+rootfs)
 
 	fmt.Println("PARENT: Forking /proc/self/exe with PARENT_STAGE")
 	if err := cmd.Start(); err != nil {
@@ -157,21 +174,40 @@ func RunContainer(containerId, specPath string) error {
 	}
 	_ = child.Close() // Close child side in parent
 
-	// Wait for the child to notify that the child setup has been done
-	waitCh := initWaiter(parent)
+	// Send runtime options to the parent stage through the pipe
+	opts := stageOptions{Detach: detach, Rootfs: rootfs}
+	if err := json.NewEncoder(parent).Encode(&opts); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("failed to send stage options: %w", err)
+	}
+
+	// Wait for the child to signal readiness and report its PID
 	fmt.Println("PARENT: Waiting for child setup signal...")
-	if err := <-waitCh; err != nil {
+	childPID, err := readInitInfo(parent)
+	if err != nil {
 		// if there's an error from the child, let's wait on cmd to ensure no zombie
 		_ = cmd.Wait()
 		return fmt.Errorf("child setup failed: %w", err)
 	}
 	fmt.Println("PARENT: Child setup done.")
 
-	container.InitProcessPiD = cmd.Process.Pid
+	container.InitProcessPiD = childPID
 	container.Status = Running
 	if err := SaveState(stateDir, container); err != nil {
 		return err
 	}
+
+	if detach {
+		// In detached mode we release the parent-stage process so it can
+		// be reaped by the OS and return immediately after the init
+		// process has started and the state has been saved.
+		if err := cmd.Process.Release(); err != nil {
+			return fmt.Errorf("failed to release parent-stage: %w", err)
+		}
+		return nil
+	}
+
 	// Optionally, wait for the parent-stage to complete fully.
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("error waiting for parent-stage cmd: %w", err)
@@ -185,11 +221,56 @@ func RunContainer(containerId, specPath string) error {
 	return nil
 }
 
+// StopContainer terminates the container's init process and updates its state
+// to Stopped.
+func StopContainer(containerId string) error {
+	stateDir := StateDir(containerId)
+	c, err := LoadState(stateDir)
+	if err != nil {
+		return err
+	}
+	if c.Status != Running {
+		return fmt.Errorf("container %s is not running", containerId)
+	}
+
+	proc, err := os.FindProcess(c.InitProcessPiD)
+	if err != nil {
+		return fmt.Errorf("cannot find process: %w", err)
+	}
+	if err := proc.Signal(syscall.SIGKILL); err != nil {
+		return fmt.Errorf("failed to kill process: %w", err)
+	}
+
+	c.Status = Stopped
+	if err := SaveState(stateDir, c); err != nil {
+		return err
+	}
+	return nil
+}
+
 // cpAlpineFS copies the local Alpine filesystem from /vagrant/alpine to dst.
 func cpAlpineFS(dst string) error {
 	src := "/vagrant/alpine"
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		// fallback to local alpine directory when running outside the VM
+		if wd, err2 := os.Getwd(); err2 == nil {
+			alt := filepath.Join(wd, "alpine")
+			if _, err3 := os.Stat(alt); err3 == nil {
+				src = alt
+			} else {
+				return fmt.Errorf("alpine rootfs not found at %s or %s", src, alt)
+			}
+		} else {
+			return fmt.Errorf("failed to stat %s: %w", src, err)
+		}
+	}
 
-	cmd := exec.Command("cp", "-r", src, dst)
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("failed to create rootfs dir %s: %w", dst, err)
+	}
+
+	// Copy the contents of src into dst rather than nesting the directory
+	cmd := exec.Command("cp", "-a", src+"/.", dst)
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
@@ -201,8 +282,8 @@ func cpAlpineFS(dst string) error {
 
 // initSocketPair creates a Unix domain socket pair used for a simple
 // one-byte handshake between processes.
-func initSocketPair(name string) (parent, child *os.File, err error) {
-	fds, err := unix.Socketpair(unix.AF_LOCAL, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+func initSocketPair(name string, flags int) (parent, child *os.File, err error) {
+	fds, err := unix.Socketpair(unix.AF_LOCAL, unix.SOCK_STREAM|flags, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create socket pair: %w", err)
 	}
@@ -224,18 +305,65 @@ func handleParentStage() error {
 	initComm := os.NewFile(uintptr(fd), "init-pipe")
 	defer initComm.Close()
 
+	var opts stageOptions
+	if err := json.NewDecoder(initComm).Decode(&opts); err != nil {
+		return fmt.Errorf("failed to read stage options: %w", err)
+	}
+
 	// Notify the real parent that we've made it into the child.
 	fmt.Println("INIT (parent-stage): Notifying real parent we are ready")
 	if _, err := initComm.Write([]byte{0}); err != nil {
 		return fmt.Errorf("failed to write init setup byte: %w", err)
 	}
 
+	// create a pipe used for the child stage to notify when setup is
+	// complete. This must remain open across exec so we don't set CLOEXEC.
+	notifyParent, notifyChild, err := initSocketPair("stage", 0)
+	if err != nil {
+		return fmt.Errorf("failed to create stage pipe: %w", err)
+	}
+	defer notifyParent.Close()
+
+	detach := opts.Detach
+	rootfs := opts.Rootfs
+	if rootfs == "" {
+		rootfs = "/alpine"
+	}
+
 	// Now spawn the *second* stage: a new process in new namespaces.
 	fmt.Println("INIT (parent-stage): Spawning the child-stage in new namespaces")
 	childCmd := exec.Command("/proc/self/exe", "init", ChildStage)
-	childCmd.Stdin = os.Stdin
-	childCmd.Stdout = os.Stdout
-	childCmd.Stderr = os.Stderr
+	childExtraFiles := []*os.File{notifyChild}
+	childCmd.ExtraFiles = append(childCmd.ExtraFiles, childExtraFiles...)
+
+	// FD number for the notify pipe inside the child
+	notifyFD := 3 + len(childCmd.ExtraFiles) - 1
+	childCmd.Env = append(os.Environ(),
+		"ROOTFS_PATH="+rootfs,
+		fmt.Sprintf("STAGE_PIPE=%d", notifyFD),
+	)
+	if detach {
+		// Detach the child from our terminal for output. If something is
+		// piped into the runtime's stdin, forward it through a pipe so
+		// the container can still read the script without holding the
+		// controlling terminal.
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return fmt.Errorf("failed to create stdin pipe: %w", err)
+		}
+		childCmd.Stdin = pr
+		childCmd.Stdout = nil
+		childCmd.Stderr = nil
+
+		go func() {
+			_, _ = io.Copy(pw, os.Stdin)
+			pw.Close()
+		}()
+	} else {
+		childCmd.Stdin = os.Stdin
+		childCmd.Stdout = os.Stdout
+		childCmd.Stderr = os.Stderr
+	}
 
 	// Note: removed the duplicate CLONE_NEWPID
 	childCmd.SysProcAttr = &syscall.SysProcAttr{
@@ -245,16 +373,40 @@ func handleParentStage() error {
 			unix.CLONE_NEWNS |
 			unix.CLONE_NEWCGROUP,
 	}
+	if detach {
+		// Ensure the container does not receive a SIGHUP when the
+		// runtime process exits.
+		childCmd.SysProcAttr.Setsid = true
+	}
 
 	if err := childCmd.Start(); err != nil {
 		return fmt.Errorf("failed to start child stage: %w", err)
 	}
 
+	// close our copy of the child end after the fork
+	_ = notifyChild.Close()
+
+	// wait for the child stage to signal successful setup
+	b := make([]byte, 1)
+	if _, err := notifyParent.Read(b); err != nil {
+		return fmt.Errorf("failed waiting for child setup: %w", err)
+	}
+	if b[0] != 0 {
+		return fmt.Errorf("unexpected stage byte %d", b[0])
+	}
+
 	fmt.Printf("Child-stage PID (host) = %d\n", childCmd.Process.Pid)
 
 	// Optionally write the child's PID to our parent (not strictly necessary).
-	if _, err := initComm.Write([]byte(fmt.Sprintf("pid:%d", childCmd.Process.Pid))); err != nil {
+	if _, err := initComm.Write([]byte(fmt.Sprintf("pid:%d\n", childCmd.Process.Pid))); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write child's PID: %v\n", err)
+	}
+
+	if detach {
+		if err := childCmd.Process.Release(); err != nil {
+			return fmt.Errorf("failed to release child: %w", err)
+		}
+		return nil
 	}
 
 	// Wait for the child stage to exit (so we don't leak a child).
@@ -270,6 +422,17 @@ func handleParentStage() error {
 func handleChildStage() error {
 	fmt.Println("INIT: Entering child stage")
 	fmt.Printf("INIT (child-stage): process pid on the host = %d\n", unix.Getpid())
+
+	stageFDStr := os.Getenv("STAGE_PIPE")
+	var stagePipe *os.File
+	if stageFDStr != "" {
+		fd, err := strconv.Atoi(stageFDStr)
+		if err != nil {
+			return fmt.Errorf("invalid STAGE_PIPE fd: %w", err)
+		}
+		stagePipe = os.NewFile(uintptr(fd), "stage-pipe")
+		defer stagePipe.Close()
+	}
 
 	rootfs := os.Getenv("ROOTFS_PATH")
 	if rootfs == "" {
@@ -333,6 +496,13 @@ func handleChildStage() error {
 		return fmt.Errorf("failed to mount /proc in child: %w", err)
 	}
 
+	// signal the parent-stage that setup succeeded
+	if stagePipe != nil {
+		if _, err := stagePipe.Write([]byte{0}); err != nil {
+			return fmt.Errorf("failed to signal parent: %w", err)
+		}
+	}
+
 	fmt.Println("INIT (child-stage): Replacing current process with /bin/sh...")
 	shellPath := "/bin/sh"
 	argv := []string{shellPath}
@@ -361,27 +531,33 @@ func joinNamespace(pid int, namespace string) {
 	fmt.Printf("Joined %s namespace of PID %d\n", namespace, pid)
 }
 
-// initWaiter reads a single byte from the provided reader to signal
-// that the child has done preliminary setup. Returns a channel
-// which yields an error if there was a problem or nil on success.
-func initWaiter(r io.Reader) chan error {
-	ch := make(chan error, 1)
-	go func() {
-		defer close(ch)
-		buf := make([]byte, 1)
+// readInitInfo reads the setup handshake from the init process and returns the
+// PID of the child stage. The protocol is a single 0 byte followed by
+// "pid:<num>\n".
+func readInitInfo(r io.Reader) (int, error) {
+	br := bufio.NewReader(r)
 
-		n, err := r.Read(buf)
-		if err == nil {
-			if n < 1 {
-				err = errors.New("short read (no bytes)")
-			} else if buf[0] != 0 {
-				err = fmt.Errorf("unexpected handshake byte %d != 0", buf[0])
-			}
-		}
-		// If err is still nil here, we successfully got a 0 byte
-		ch <- err
-	}()
-	return ch
+	b, err := br.ReadByte()
+	if err != nil {
+		return 0, err
+	}
+	if b != 0 {
+		return 0, fmt.Errorf("unexpected handshake byte %d != 0", b)
+	}
+
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+	if !strings.HasPrefix(line, "pid:") {
+		return 0, fmt.Errorf("unexpected init message %q", strings.TrimSpace(line))
+	}
+	pidStr := strings.TrimSpace(strings.TrimPrefix(line, "pid:"))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid pid %q: %w", pidStr, err)
+	}
+	return pid, nil
 }
 
 // init is called automatically when this package is loaded (i.e., before main()).

@@ -19,6 +19,7 @@ var rootCmd = &cobra.Command{
 // Execute runs the root command and adds child commands
 func Execute() {
 	rootCmd.AddCommand(runCmd)
+	rootCmd.AddCommand(stopCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
