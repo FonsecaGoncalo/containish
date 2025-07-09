@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: light)" srcset="/img.png">
-  <img alt="containish logo" src="/img.png" width="25%" height="25%">
+  <source media="(prefers-color-scheme: light)" srcset="/img_1.png">
+  <img alt="containish logo" src="/img_1.png" width="25%" height="25%">
 </picture>
 
 <h1>Containish</h1>
