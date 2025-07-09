@@ -24,3 +24,20 @@ Containish: A naive and simplistic containerization system written in Go
 git clone https://github.com/yourusername/containish.git
 cd containish
 go build -o containish
+```
+
+---
+
+## 🧪 Running Integration Tests
+
+The `scripts/integration_test.sh` helper boots the Vagrant VM and executes the
+Go integration tests inside it. Ensure Vagrant is installed and that an Alpine
+root filesystem exists at `./alpine` before running the script.
+
+```bash
+./scripts/integration_test.sh
+```
+
+The tests build the binary and launch a container that should print `hello`.
+If the output ends with the usual Go test `PASS` line, the container behaved as
+expected.
