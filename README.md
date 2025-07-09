@@ -1,10 +1,11 @@
 <div align="center">
 
- <img src="./img.png" alt="drawing" width="200"/>
-Containiss
-A naive and simplistic containerization system written in Go. **Contain-ish** is for educational purposes to demonstrate basic container concepts using Linux namespaces.
-</div>
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/img.png">
+  <img alt="containish logo" src="/img.png" width="50%" height="50%">
+</picture>
 
+</div>
 ---
 
 ## 📋 Requirements
