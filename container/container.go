@@ -35,6 +35,10 @@ type Container struct {
 }
 
 func SaveState(stateDir string, s *Container) error {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fmt.Errorf("failed to create state dir: %w", err)
+	}
+
 	f, err := os.Create(filepath.Join(stateDir, "state.json"))
 	if err != nil {
 		return fmt.Errorf("failed to create state.json: %w", err)
@@ -45,6 +49,10 @@ func SaveState(stateDir string, s *Container) error {
 	enc.SetIndent("", " ")
 	if err := enc.Encode(s); err != nil {
 		return fmt.Errorf("failed to enconde container state: %w", err)
+	}
+
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("failed to sync state.json: %w", err)
 	}
 
 	return nil
@@ -149,12 +157,18 @@ func RunContainer(containerId string) error {
 	fmt.Println("PARENT: Child setup done.")
 
 	container.InitProcessPiD = cmd.Process.Pid
+	container.Status = Running
 	if err := SaveState(stateDir, container); err != nil {
 		return err
 	}
 	// Optionally, wait for the parent-stage to complete fully.
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("error waiting for parent-stage cmd: %w", err)
+	}
+
+	container.Status = Stopped
+	if err := SaveState(stateDir, container); err != nil {
+		return err
 	}
 
 	return nil
