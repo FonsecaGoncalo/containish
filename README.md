@@ -1,5 +1,8 @@
 # Contain-ish 📦
-![img.png](img.png)
+
+<p align="center">
+ <img src="./img.png" alt="drawing" width="200"/>
+</p>
 A naive and simplistic containerization system written in Go. **Contain-ish** is for educational purposes to demonstrate basic container concepts using Linux namespaces.
 
 ---
