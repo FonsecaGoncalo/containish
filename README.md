@@ -10,14 +10,6 @@
 
 ---
 
-## 📋 Requirements
-
-- **Go** (1.16 or higher) 🏁
-- **Linux** 🐧
-- **Root Access** 🔑
-
----
-
 ## 🛠️ Installation
 
 ```bash
