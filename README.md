@@ -10,7 +10,7 @@
 
 ---
 
-## 🛠️ Installation
+## Installation
 
 ```bash
 git clone https://github.com/yourusername/containish.git
@@ -20,7 +20,7 @@ go build -o containish
 
 ---
 
-## 🧪 Running Integration Tests
+## Running Integration Tests
 
 The `scripts/integration_test.sh` helper boots the Vagrant VM and executes the
 Go integration tests inside it. Ensure Vagrant is installed and that an Alpine
@@ -37,7 +37,7 @@ The tests build the binary and launch a container that should print `hello`.
 If the output ends with the usual Go test `PASS` line, the container behaved as
 expected.
 
-## 🚀 Running Containers
+## Running Containers
 
 Use `containish run <id>` to start a container using the default `config.json`.
 Add the `-d` flag to detach and return immediately after the container starts:
